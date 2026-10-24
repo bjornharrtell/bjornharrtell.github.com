@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Pinball Dreams — preview</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #101014; color: #d8d8e0;
+         font: 14px/1.5 system-ui, sans-serif; display: flex; flex-direction: column;
+         align-items: center; gap: 12px; padding: 16px; }
+  canvas { image-rendering: pixelated; background: #000; width: 640px; height: 1084px; }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  button { background: #24242c; color: inherit; border: 1px solid #3a3a46; border-radius: 6px;
+           padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { background: #2e2e38; }
+  code { background: #1c1c22; padding: 1px 5px; border-radius: 4px; }
+  .muted { color: #8a8a99; }
+
+  /* Phones: remove every piece of page chrome. The complete 320x542 table is centred in
+     the viewport; the shell letterboxes it in black and keeps scanlines source-aligned. */
+  @media (max-width: 720px), (pointer: coarse) {
+    html, body { width: 100%; height: 100%; }
+    body { display: block; padding: 0; overflow: hidden; overscroll-behavior: none;
+           background: #000; touch-action: none; }
+    h1, .intro, #status-bar, #pack-bar, #control-bar, #help-bar { display: none; }
+    canvas { position: fixed; inset: 0; display: block; width: 100vw;
+             height: 100vh; height: 100dvh; object-fit: contain; object-position: center;
+             -webkit-touch-callout: none; user-select: none; }
+  }
+</style>
+</head>
+<body>
+  <h1 style="font-size: 18px; margin: 0;">Pinball Dreams — native port</h1>
+  <p class="muted intro" style="margin: 0; text-align: center; max-width: 640px;">
+    Nightmare table — recovered artwork and a native 50 Hz simulation.
+    Gameplay recovery is in progress; physics, launch and rules are still being verified.
+  </p>
+
+  <div class="bar" id="status-bar" aria-label="Game status">
+    <span>Score <b id="score">000000000000</b></span>
+    <span>Ball <b id="ball">1</b> / 3</span>
+    <span id="game-state">Preparing the next ball</span>
+    <label>Pull <meter id="charge" min="0" max="4096" value="0">0</meter></label>
+  </div>
+  <canvas id="screen" width="640" height="1084"></canvas>
+
+  <div class="bar" id="pack-bar">
+    <label class="muted" for="pf">Table pack (optional replacement):</label>
+    <input id="pf" type="file" accept=".bin">
+    <span class="muted" id="pfnote">autoloads <code>web/table.pack.bin</code></span>
+  </div>
+
+  <div class="bar" id="control-bar">
+    <button id="run">Pause</button>
+    <button id="step">Step</button>
+    <span class="muted technical">frame <b id="frames">0</b> · hash <code id="hash">—</code> · <b id="fps">0</b> fps</span>
+  </div>
+
+  <div class="bar muted" id="help-bar">
+    <span>Keys: <code>Left Shift</code> left flipper · <code>Right Shift</code> right flipper · <code>Space</code> launch · <code>P</code> pause</span>
+  </div>
+
+  <script type="module" src="shell.js"></script>
+</body>
+</html>
