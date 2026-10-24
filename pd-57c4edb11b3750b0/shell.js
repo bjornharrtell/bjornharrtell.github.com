@@ -16,7 +16,6 @@ const HEIGHT = 542;
 
 const MOBILE_LAYOUT = matchMedia("(max-width: 720px), (pointer: coarse)");
 const LONG_PRESS_MS = 450;
-const MAX_PIXEL_RATIO = 3;
 
 const canvas = document.getElementById("screen");
 const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
@@ -198,7 +197,7 @@ function layoutCanvas() {
   const mobile = MOBILE_LAYOUT.matches;
   const cssWidth = canvas.clientWidth || window.innerWidth;
   const cssHeight = canvas.clientHeight || window.innerHeight;
-  const pixelRatio = mobile ? Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO) : 1;
+  const pixelRatio = mobile ? (window.devicePixelRatio || 1) : 1;
   const pixelWidth = mobile ? Math.max(1, Math.round(cssWidth * pixelRatio)) : 640;
   const pixelHeight = mobile ? Math.max(1, Math.round(cssHeight * pixelRatio)) : 1084;
 
