@@ -262,6 +262,7 @@ const memory = () => new Uint8Array(api.memory.buffer);
 let audioContext = null;
 let audioNode = null;
 let audioStarting = false;
+const audioUnderrunsEl = document.getElementById("audio-underruns");
 
 function pumpAudio(frames) {
   if (!audioNode) return;
@@ -284,7 +285,11 @@ async function ensureAudio() {
     await audioContext.audioWorklet.addModule("./audio-worklet.js");
     audioNode = new AudioWorkletNode(audioContext, "pd-player");
     audioNode.port.onmessage = (event) => {
-      if (event.data && event.data.type === "need") pumpAudio(event.data.frames);
+      if (!event.data) return;
+      if (event.data.type === "need") pumpAudio(event.data.frames);
+      else if (event.data.type === "stats" && audioUnderrunsEl) {
+        audioUnderrunsEl.textContent = String(event.data.underruns);
+      }
     };
     audioNode.connect(audioContext.destination);
     await audioContext.resume();
