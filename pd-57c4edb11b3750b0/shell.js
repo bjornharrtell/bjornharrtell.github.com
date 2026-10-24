@@ -415,38 +415,93 @@ const PREVIEW_COLOURS = {
   nightmare: [159, 224, 112],
 };
 
+function findChunk(bytes, magic) {
+  const match = (at) => {
+    if (at + 8 > bytes.length) return false;
+    for (let i = 0; i < 4; i++) if (bytes[at + i] !== magic.charCodeAt(i)) return false;
+    return true;
+  };
+  for (let at = 12; at + 8 <= bytes.length; at++) {
+    if (!match(at)) continue;
+    if (magic === "DISP") {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const width = view.getUint16(at + 4);
+      const rows = view.getUint16(at + 6);
+      const planes = view.getUint16(at + 8);
+      const rowBytes = view.getUint16(at + 10);
+      const length = view.getUint32(at + 12);
+      if (width !== WIDTH || planes !== 6 || rowBytes !== 40 || length !== rows * 240) continue;
+      if (at + 16 + length > bytes.length) continue;
+      return { rows, start: at + 16 };
+    }
+    if (magic === "PALX") {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const length = view.getUint32(at + 4);
+      if (length !== 64 || at + 8 + length > bytes.length) continue;
+      const palette = new Uint16Array(32);
+      for (let i = 0; i < 32; i++) palette[i] = view.getUint16(at + 8 + i * 2);
+      return palette;
+    }
+  }
+  return null;
+}
+
 function paintPackPreview(button, bytes, colour) {
   if (bytes.length < 12 || String.fromCharCode(...bytes.subarray(0, 4)) !== "PDTB") return;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const planeLength = view.getUint32(4);
-  if (!planeLength || planeLength % 120) return;
-  const rows = planeLength / 120;
   const preview = document.createElement("canvas");
   preview.className = "preview";
   preview.width = 128;
   preview.height = 208;
   const context = preview.getContext("2d");
   const image = context.createImageData(preview.width, preview.height);
-  for (let py = 0; py < preview.height; py++) {
-    const y = Math.floor(py * rows / preview.height);
-    for (let px = 0; px < preview.width; px++) {
-      const x = Math.floor(px * WIDTH / preview.width);
-      const at = 12 + y * 120 + (x >> 3);
-      const bit = 0x80 >> (x & 7);
-      const value = ((bytes[at] & bit) ? 1 : 0) |
-        ((bytes[at + 40] & bit) ? 2 : 0) |
-        ((bytes[at + 80] & bit) ? 4 : 0);
-      const pixel = (py * preview.width + px) * 4;
-      if (value & 3) {
-        image.data[pixel] = colour[0];
-        image.data[pixel + 1] = colour[1];
-        image.data[pixel + 2] = colour[2];
+  const display = findChunk(bytes, "DISP");
+  const palette = findChunk(bytes, "PALX");
+  if (display && palette) {
+    for (let py = 0; py < preview.height; py++) {
+      const y = Math.floor(py * display.rows / preview.height);
+      for (let px = 0; px < preview.width; px++) {
+        const x = Math.floor(px * WIDTH / preview.width);
+        const row = display.start + y * 240;
+        let index = 0;
+        for (let plane = 0; plane < 6; plane++) {
+          const byte = bytes[row + plane * 40 + (x >> 3)];
+          index |= ((byte >> (7 - (x & 7))) & 1) << plane;
+        }
+        const word = palette[index & 31];
+        const half = index >= 32 ? 0.5 : 1;
+        const pixel = (py * preview.width + px) * 4;
+        image.data[pixel] = Math.floor(((word >> 8) & 15) * 17 * half);
+        image.data[pixel + 1] = Math.floor(((word >> 4) & 15) * 17 * half);
+        image.data[pixel + 2] = Math.floor((word & 15) * 17 * half);
         image.data[pixel + 3] = 255;
-      } else if (value & 4) {
-        image.data[pixel] = colour[0] >> 1;
-        image.data[pixel + 1] = colour[1] >> 1;
-        image.data[pixel + 2] = colour[2] >> 1;
-        image.data[pixel + 3] = 255;
+      }
+    }
+  } else {
+    const planeLength = view.getUint32(4);
+    if (!planeLength || planeLength % 120) return;
+    const rows = planeLength / 120;
+    for (let py = 0; py < preview.height; py++) {
+      const y = Math.floor(py * rows / preview.height);
+      for (let px = 0; px < preview.width; px++) {
+        const x = Math.floor(px * WIDTH / preview.width);
+        const at = 12 + y * 120 + (x >> 3);
+        const bit = 0x80 >> (x & 7);
+        const value = ((bytes[at] & bit) ? 1 : 0) |
+          ((bytes[at + 40] & bit) ? 2 : 0) |
+          ((bytes[at + 80] & bit) ? 4 : 0);
+        const pixel = (py * preview.width + px) * 4;
+        if (value & 3) {
+          image.data[pixel] = colour[0];
+          image.data[pixel + 1] = colour[1];
+          image.data[pixel + 2] = colour[2];
+          image.data[pixel + 3] = 255;
+        } else if (value & 4) {
+          image.data[pixel] = colour[0] >> 1;
+          image.data[pixel + 1] = colour[1] >> 1;
+          image.data[pixel + 2] = colour[2] >> 1;
+          image.data[pixel + 3] = 255;
+        }
       }
     }
   }
