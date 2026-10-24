@@ -128,7 +128,6 @@ uniform sampler2D indices;   //320x542, nearest-neighbour at2x
 uniform sampler2D palette;   //69x1 RGB (32base+32EHB+5header/separator)
 uniform vec2 tableOrigin;    // bottom-left of the table in framebuffer pixels
 uniform vec2 tableSize;      // displayed table size in framebuffer pixels
-uniform vec2 sourceSize;     // 320x542 logical table size
 out vec4 colour;
 void main() {
   vec2 p = gl_FragCoord.xy - tableOrigin;
@@ -140,13 +139,10 @@ void main() {
   vec2 uv = vec2(p.x / tableSize.x, 1.0 - p.y / tableSize.y);
   float index = floor(texture(indices, uv).r * 255.0);
   vec3 rgb = texture(palette, vec2((index + 0.5) / 69.0, 0.5)).rgb;
-  // D7 presentation effect: one dark half-row per logical row. Aligning it to the source
-  // rows keeps scanlines crisp when the table is scaled to a phone's physical resolution.
-  float rowPixels = tableSize.y / sourceSize.y;
-  float scanline = 1.0;
-  if (rowPixels >= 1.5) {
-    scanline = fract(uv.y * sourceSize.y) < 0.5 ? 0.65 : 1.0;
-  }
+  // D7 presentation effect: alternate65%-brightness dark and full-brightness lines on the
+  // physical even/odd pixel rows. Deriving the phase from table-local pixels keeps the
+  // scanline period intact at fractional mobile scales instead of merging pairs of rows.
+  float scanline = mod(floor(p.y), 2.0) < 1.0 ? 0.65 : 1.0;
   colour = vec4(rgb * scanline, 1.0);
 }`;
 
@@ -187,7 +183,6 @@ gl.uniform1i(gl.getUniformLocation(program, "indices"), 0);
 gl.uniform1i(gl.getUniformLocation(program, "palette"), 1);
 const tableOriginLoc = gl.getUniformLocation(program, "tableOrigin");
 const tableSizeLoc = gl.getUniformLocation(program, "tableSize");
-gl.uniform2f(gl.getUniformLocation(program, "sourceSize"), WIDTH, HEIGHT);
 
 // On phones the canvas is as large as the viewport's physical pixel grid, and the shader
 // letterboxes the 320x542 table inside it. That gives the browser no resampling to do:
