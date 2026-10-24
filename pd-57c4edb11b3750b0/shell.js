@@ -46,6 +46,7 @@ const KEYMAP = new Map([
 let running = true;
 
 addEventListener("keydown", (e) => {
+  void ensureAudio();
   if (e.code === "KeyP") { toggle(); return; }
   if (KEYMAP.has(e.code)) { keys.add(KEYMAP.get(e.code)); e.preventDefault(); }
 });
@@ -65,6 +66,7 @@ function clearTouchPointers() {
 canvas.addEventListener("pointerdown", (e) => {
   if (!MOBILE_LAYOUT.matches || (e.pointerType === "mouse" && e.button !== 0)) return;
   e.preventDefault();
+  void ensureAudio();
   const pointer = {
     bit: e.clientX < innerWidth / 2 ? FLIP_LEFT : FLIP_RIGHT,
     launch: false,
@@ -253,6 +255,45 @@ if (api.pd_core_tick_hz() !== 50) {
 
 const core = api.pd_core_new();
 const memory = () => new Uint8Array(api.memory.buffer);
+
+// ---- native music ----
+// The wasm core renders the recovered 50 Hz player into 48 kHz float blocks. An
+// AudioWorklet owns the output clock; the main thread only fills its queue.
+let audioContext = null;
+let audioNode = null;
+let audioStarting = false;
+
+function pumpAudio(frames) {
+  if (!audioNode) return;
+  const count = api.pd_core_audio_render(core, Math.min(frames, api.pd_core_audio_buffer_len()));
+  if (count === 0) return;
+  const ptr = api.pd_core_audio_buffer(core);
+  const samples = new Float32Array(api.memory.buffer, ptr, count).slice();
+  audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
+}
+
+async function ensureAudio() {
+  if (audioContext) {
+    if (audioContext.state === "suspended") await audioContext.resume();
+    return;
+  }
+  if (audioStarting) return;
+  audioStarting = true;
+  try {
+    audioContext = new AudioContext({ sampleRate: 48000 });
+    await audioContext.audioWorklet.addModule("./audio-worklet.js");
+    audioNode = new AudioWorkletNode(audioContext, "pd-player");
+    audioNode.port.onmessage = (event) => {
+      if (event.data && event.data.type === "need") pumpAudio(event.data.frames);
+    };
+    audioNode.connect(audioContext.destination);
+    await audioContext.resume();
+    for (let i = 0; i < 4; i++) pumpAudio(4800);
+  } catch (error) {
+    audioStarting = false;
+    console.warn("music unavailable", error);
+  }
+}
 
 // Playfield data: the user's own disks, converted by tools/playfield.py. Nothing is bundled in git,
 // but if web/playfield.bin exists it is picked up automatically, so the page is ready to run.
