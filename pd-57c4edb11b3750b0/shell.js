@@ -17,11 +17,24 @@ const HEIGHT = 542;
 const MOBILE_LAYOUT = matchMedia("(max-width: 720px), (pointer: coarse)");
 const LONG_PRESS_MS = 450;
 
+// M6 spike: Nightmare is the source-recovered table; the three preview packs are
+// geometry/feature extracts built from the other modules with tools/build_pack.py.
+const TABLES = [
+  { id: "ignition", name: "Ignition", pack: "./table_a.pack.bin", full: false },
+  { id: "steel-wheel", name: "Steel Wheel", pack: "./table_b.pack.bin", full: false },
+  { id: "beat-box", name: "Beat Box", pack: "./table_c.pack.bin", full: false },
+  { id: "nightmare", name: "Nightmare", pack: "./table.pack.bin", full: true },
+];
+let tableReady = false;
+
 const canvas = document.getElementById("screen");
 const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
 if (gl) gl.disable(gl.DITHER); // Keep2x pixel pairs and scanline brightness deterministic.
 if (!gl) throw new Error("WebGL2 is required");
 
+const tableSelectEl = document.getElementById("table-select");
+const selectStatusEl = document.getElementById("select-status");
+const tablesBtn = document.getElementById("tables");
 const framesEl = document.getElementById("frames");
 const hashEl = document.getElementById("hash");
 const fpsEl = document.getElementById("fps");
@@ -93,7 +106,7 @@ canvas.addEventListener("pointerup", releaseTouch);
 canvas.addEventListener("pointercancel", releaseTouch);
 canvas.addEventListener("lostpointercapture", releaseTouch);
 canvas.addEventListener("touchend", () => { void ensureAudio(); }, { passive: true });
-document.addEventListener("click", () => { void ensureAudio(); });
+document.addEventListener("click", () => { unlockAudio(); });
 canvas.addEventListener("contextmenu", (e) => {
   if (MOBILE_LAYOUT.matches) e.preventDefault();
 });
@@ -106,6 +119,7 @@ document.addEventListener("visibilitychange", () => {
 
 runBtn.addEventListener("click", toggle);
 stepBtn.addEventListener("click", () => { running = false; runBtn.textContent = "Resume"; renderOnce(); });
+tablesBtn.addEventListener("click", () => { location.href = location.pathname; });
 
 function toggle() {
   running = !running;
@@ -321,6 +335,8 @@ function unlockAudio() {
 
 async function ensureAudio() {
   unlockAudio();
+  // The selection screen can be clicked before a pack exists; do not prime an empty mixer.
+  if (!tableReady) return;
   if (audioStarting) return;
   audioStarting = true;
   let readyTimeout = null;
@@ -383,10 +399,121 @@ function commitPlayfield(bytes) {
   const ptr = api.pd_core_scratch(core);
   memory().set(bytes, ptr);
   if (!api.pd_core_commit_playfield(core, bytes.length)) return false;
+  tableReady = true;
   api.pd_core_render(core);
   upload();
   draw();
   return true;
+}
+
+let selectBusy = false;
+
+const PREVIEW_COLOURS = {
+  ignition: [255, 123, 82],
+  "steel-wheel": [112, 184, 232],
+  "beat-box": [217, 146, 255],
+  nightmare: [159, 224, 112],
+};
+
+function paintPackPreview(button, bytes, colour) {
+  if (bytes.length < 12 || String.fromCharCode(...bytes.subarray(0, 4)) !== "PDTB") return;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const planeLength = view.getUint32(4);
+  if (!planeLength || planeLength % 120) return;
+  const rows = planeLength / 120;
+  const preview = document.createElement("canvas");
+  preview.className = "preview";
+  preview.width = 128;
+  preview.height = 208;
+  const context = preview.getContext("2d");
+  const image = context.createImageData(preview.width, preview.height);
+  for (let py = 0; py < preview.height; py++) {
+    const y = Math.floor(py * rows / preview.height);
+    for (let px = 0; px < preview.width; px++) {
+      const x = Math.floor(px * WIDTH / preview.width);
+      const at = 12 + y * 120 + (x >> 3);
+      const bit = 0x80 >> (x & 7);
+      const value = ((bytes[at] & bit) ? 1 : 0) |
+        ((bytes[at + 40] & bit) ? 2 : 0) |
+        ((bytes[at + 80] & bit) ? 4 : 0);
+      const pixel = (py * preview.width + px) * 4;
+      if (value & 3) {
+        image.data[pixel] = colour[0];
+        image.data[pixel + 1] = colour[1];
+        image.data[pixel + 2] = colour[2];
+        image.data[pixel + 3] = 255;
+      } else if (value & 4) {
+        image.data[pixel] = colour[0] >> 1;
+        image.data[pixel + 1] = colour[1] >> 1;
+        image.data[pixel + 2] = colour[2] >> 1;
+        image.data[pixel + 3] = 255;
+      }
+    }
+  }
+  context.putImageData(image, 0, 0);
+  button.prepend(preview);
+}
+
+async function loadPreviews() {
+  await Promise.allSettled(TABLES.map(async (table) => {
+    const button = tableSelectEl.querySelector(`[data-table="${table.id}"]`);
+    if (!button) return;
+    const response = await fetch(table.pack);
+    if (!response.ok) return;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    paintPackPreview(button, bytes, PREVIEW_COLOURS[table.id]);
+  }));
+}
+
+function resetClock() {
+  tickAccumulator = 0;
+  last = performance.now();
+  frames = 0;
+  fpsWindowStart = last;
+  fpsFrames = 0;
+  framesEl.textContent = "0";
+  fpsEl.textContent = "0";
+  hashEl.textContent = "—";
+}
+
+function enterGame(title) {
+  document.body.classList.add("playing");
+  running = true;
+  runBtn.textContent = "Pause";
+  document.title = `${title} — Pinball Dreams preview`;
+  resetClock();
+  layoutCanvas();
+  api.pd_core_render(core);
+  upload();
+  draw();
+  startGameLoop();
+  void ensureAudio();
+}
+
+async function selectTable(id, updateUrl = true) {
+  const table = TABLES.find((candidate) => candidate.id === id);
+  if (!table || selectBusy) return;
+  selectBusy = true;
+  for (const button of tableSelectEl.querySelectorAll("[data-table]")) button.disabled = true;
+  selectStatusEl.textContent = `Loading ${table.name}…`;
+  try {
+    const response = await fetch(table.pack);
+    if (!response.ok) throw new Error(`pack not built (${response.status})`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!commitPlayfield(bytes)) throw new Error("pack rejected by the core");
+    if (updateUrl) history.replaceState(null, "", `?table=${encodeURIComponent(table.id)}`);
+    document.getElementById("pfnote").textContent = table.full
+      ? "optional replacement for Nightmare"
+      : `${table.name} is a geometry/feature preview; artwork and rules are not recovered`;
+    enterGame(table.name);
+  } catch (error) {
+    selectStatusEl.textContent = `${table.name}: ${error.message}. ` +
+      "Build this pack with tools/build_pack.py and place it beside shell.js.";
+    console.warn("table load failed", error);
+  } finally {
+    selectBusy = false;
+    for (const button of tableSelectEl.querySelectorAll("[data-table]")) button.disabled = false;
+  }
 }
 
 pfInput.addEventListener("change", async () => {
@@ -396,26 +523,10 @@ pfInput.addEventListener("change", async () => {
   if (!commitPlayfield(bytes)) {
     alert(`could not load ${file.name} (${bytes.length} bytes).\n` +
           "Expected a table pack from tools/build_pack.py or a raw 62,400-byte playfield.");
+  } else {
+    enterGame(file.name.replace(/\.pack\.bin$|\.bin$/i, ""));
   }
 });
-
-// Autoload: prefer a table pack, fall back to a bare playfield, then leave the picker.
-(async () => {
-  for (const name of ["table.pack.bin", "playfield.bin"]) {
-    try {
-      const response = await fetch(`./${name}`);
-      if (!response.ok) continue;
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (commitPlayfield(bytes)) {
-        document.getElementById("pfnote").textContent =
-          `autoloaded web/${name} - pick another file to replace it`;
-        return;
-      }
-    } catch (e) {
-      // try the next candidate
-    }
-  }
-})();
 
 function frameBytes() {
   const ptr = api.pd_core_pixels(core);
@@ -435,6 +546,13 @@ let last = performance.now();
 let frames = 0;
 let fpsWindowStart = last;
 let fpsFrames = 0;
+let loopStarted = false;
+
+function startGameLoop() {
+  if (loopStarted) return;
+  loopStarted = true;
+  requestAnimationFrame(loop);
+}
 
 function updateGameStatus() {
   document.getElementById("score").textContent = api.pd_core_score(core).toString().padStart(12, "0");
@@ -509,4 +627,15 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-requestAnimationFrame(loop);
+for (const button of tableSelectEl.querySelectorAll("[data-table]")) {
+  button.addEventListener("click", () => { void selectTable(button.dataset.table); });
+}
+
+void loadPreviews();
+
+const requestedTable = new URLSearchParams(location.search).get("table");
+if (requestedTable) {
+  void selectTable(requestedTable, false);
+} else {
+  selectStatusEl.textContent = "Select a table to load its pack.";
+}
