@@ -128,6 +128,7 @@ uniform sampler2D indices;   //320x542, nearest-neighbour at2x
 uniform sampler2D palette;   //69x1 RGB (32base+32EHB+5header/separator)
 uniform vec2 tableOrigin;    // bottom-left of the table in framebuffer pixels
 uniform vec2 tableSize;      // displayed table size in framebuffer pixels
+uniform float scanlineFactor; // 0.65 for desktop D7; 1.0 disables on mobile
 out vec4 colour;
 void main() {
   vec2 p = gl_FragCoord.xy - tableOrigin;
@@ -139,14 +140,13 @@ void main() {
   vec2 uv = vec2(p.x / tableSize.x, 1.0 - p.y / tableSize.y);
   float index = floor(texture(indices, uv).r * 255.0);
   vec3 rgb = texture(palette, vec2((index + 0.5) / 69.0, 0.5)).rgb;
-  // D7 presentation effect: dark the first part of every original pixel row. The table is
-  // drawn at a whole-pixel scale, so this stays aligned to the source rows: 2x gives one
-  // dark and one bright line, 3x gives one dark and two bright, 4x gives two of each.
+  // Desktop keeps the D7 scanline pattern. Phones disable it: at whole-pixel mobile scales
+  // the lines are sub-pixel at normal viewing distance and only muddy the original artwork.
   float scale = tableSize.y / SOURCE_ROWS;
   float scanline = 1.0;
-  if (scale >= 1.0) {
+  if (scanlineFactor < 1.0 && scale >= 1.0) {
     float darkLines = max(1.0, floor(scale * 0.5));
-    scanline = mod(p.y, scale) < darkLines ? 0.65 : 1.0;
+    scanline = mod(p.y, scale) < darkLines ? scanlineFactor : 1.0;
   }
   colour = vec4(rgb * scanline, 1.0);
 }`;
@@ -188,6 +188,7 @@ gl.uniform1i(gl.getUniformLocation(program, "indices"), 0);
 gl.uniform1i(gl.getUniformLocation(program, "palette"), 1);
 const tableOriginLoc = gl.getUniformLocation(program, "tableOrigin");
 const tableSizeLoc = gl.getUniformLocation(program, "tableSize");
+const scanlineLoc = gl.getUniformLocation(program, "scanlineFactor");
 
 // On phones the canvas covers the viewport's physical pixel grid, but the table itself is
 // drawn at the largest whole-pixel scale that fits. Every original pixel becomes a square
@@ -219,6 +220,7 @@ function layoutCanvas() {
     Math.floor((pixelWidth - tableWidth) / 2),
     Math.floor((pixelHeight - tableHeight) / 2));
   gl.uniform2f(tableSizeLoc, tableWidth, tableHeight);
+  gl.uniform1f(scanlineLoc, mobile ? 1.0 : 0.65);
 }
 
 layoutCanvas();
