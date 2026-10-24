@@ -124,6 +124,7 @@ void main() {
 
 const fragmentShader = `#version 300 es
 precision highp float;
+const float SOURCE_ROWS = 542.0;
 uniform sampler2D indices;   //320x542, nearest-neighbour at2x
 uniform sampler2D palette;   //69x1 RGB (32base+32EHB+5header/separator)
 uniform vec2 tableOrigin;    // bottom-left of the table in framebuffer pixels
@@ -139,10 +140,15 @@ void main() {
   vec2 uv = vec2(p.x / tableSize.x, 1.0 - p.y / tableSize.y);
   float index = floor(texture(indices, uv).r * 255.0);
   vec3 rgb = texture(palette, vec2((index + 0.5) / 69.0, 0.5)).rgb;
-  // D7 presentation effect: alternate65%-brightness dark and full-brightness lines on the
-  // physical even/odd pixel rows. Deriving the phase from table-local pixels keeps the
-  // scanline period intact at fractional mobile scales instead of merging pairs of rows.
-  float scanline = mod(floor(p.y), 2.0) < 1.0 ? 0.65 : 1.0;
+  // D7 presentation effect: dark the first part of every original pixel row. The table is
+  // drawn at a whole-pixel scale, so this stays aligned to the source rows: 2x gives one
+  // dark and one bright line, 3x gives one dark and two bright, 4x gives two of each.
+  float scale = tableSize.y / SOURCE_ROWS;
+  float scanline = 1.0;
+  if (scale >= 1.0) {
+    float darkLines = max(1.0, floor(scale * 0.5));
+    scanline = mod(p.y, scale) < darkLines ? 0.65 : 1.0;
+  }
   colour = vec4(rgb * scanline, 1.0);
 }`;
 
@@ -184,9 +190,10 @@ gl.uniform1i(gl.getUniformLocation(program, "palette"), 1);
 const tableOriginLoc = gl.getUniformLocation(program, "tableOrigin");
 const tableSizeLoc = gl.getUniformLocation(program, "tableSize");
 
-// On phones the canvas is as large as the viewport's physical pixel grid, and the shader
-// letterboxes the 320x542 table inside it. That gives the browser no resampling to do:
-// pixels and scanlines stay aligned to the table's logical rows at any device pixel ratio.
+// On phones the canvas covers the viewport's physical pixel grid, but the table itself is
+// drawn at the largest whole-pixel scale that fits. Every original pixel becomes a square
+// integer block instead of some 3-pixel and some 4-pixel columns. The remaining viewport
+// stays black; scanlines then run on the physical even/odd rows of those integer blocks.
 function layoutCanvas() {
   const mobile = MOBILE_LAYOUT.matches;
   const cssWidth = canvas.clientWidth || window.innerWidth;
@@ -203,7 +210,8 @@ function layoutCanvas() {
   let tableWidth = pixelWidth;
   let tableHeight = pixelHeight;
   if (mobile) {
-    const scale = Math.min(pixelWidth / WIDTH, pixelHeight / HEIGHT);
+    const fit = Math.min(pixelWidth / WIDTH, pixelHeight / HEIGHT);
+    const scale = fit >= 1 ? Math.floor(fit) : fit;
     tableWidth = Math.max(1, Math.round(WIDTH * scale));
     tableHeight = Math.max(1, Math.round(HEIGHT * scale));
   }
