@@ -66,7 +66,9 @@ function clearTouchPointers() {
 canvas.addEventListener("pointerdown", (e) => {
   if (!MOBILE_LAYOUT.matches || (e.pointerType === "mouse" && e.button !== 0)) return;
   e.preventDefault();
-  void ensureAudio();
+  // On iOS this is not an activation event for touch, but it lets Android resume
+  // immediately. The pointerup handler below performs the full start.
+  unlockAudio();
   const pointer = {
     bit: e.clientX < innerWidth / 2 ? FLIP_LEFT : FLIP_RIGHT,
     launch: false,
@@ -78,6 +80,8 @@ canvas.addEventListener("pointerdown", (e) => {
 });
 
 function releaseTouch(e) {
+  unlockAudio();
+  void ensureAudio();
   const pointer = touchPointers.get(e.pointerId);
   if (!pointer) return;
   e.preventDefault();
@@ -88,6 +92,8 @@ function releaseTouch(e) {
 canvas.addEventListener("pointerup", releaseTouch);
 canvas.addEventListener("pointercancel", releaseTouch);
 canvas.addEventListener("lostpointercapture", releaseTouch);
+canvas.addEventListener("touchend", () => { void ensureAudio(); }, { passive: true });
+document.addEventListener("click", () => { void ensureAudio(); });
 canvas.addEventListener("contextmenu", (e) => {
   if (MOBILE_LAYOUT.matches) e.preventDefault();
 });
@@ -95,6 +101,7 @@ canvas.addEventListener("contextmenu", (e) => {
 addEventListener("blur", () => { keys.clear(); clearTouchPointers(); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { keys.clear(); clearTouchPointers(); }
+  else unlockAudio();
 });
 
 runBtn.addEventListener("click", toggle);
@@ -260,10 +267,13 @@ const memory = () => new Uint8Array(api.memory.buffer);
 // The wasm core renders the recovered 50 Hz player into 48 kHz float blocks. An
 // AudioWorklet owns the output clock; the main thread only fills its queue.
 let audioContext = null;
+let audioPrepare = null;
 let audioNode = null;
 let audioStarting = false;
 const AUDIO_BLOCK_FRAMES = 960;
 const AUDIO_READY_TIMEOUT_MS = 5000;
+const AUDIO_WORKLET_URL = new URL("./audio-worklet.js?v=20261024-mobile-audio", import.meta.url);
+const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
 const audioUnderrunsEl = document.getElementById("audio-underruns");
 
 function pumpAudio(frames) {
@@ -275,19 +285,49 @@ function pumpAudio(frames) {
   audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
 }
 
-async function ensureAudio() {
-  if (audioStarting) return;
-  if (audioContext) {
-    if (audioContext.state === "suspended") await audioContext.resume();
-    return;
+// Load the worklet module before the first gesture. iOS Safari will not create an
+// AudioWorkletNode after an awaited module load, even if the pointer event itself was
+// a user gesture.
+function prepareAudio() {
+  if (audioPrepare) return audioPrepare;
+  audioPrepare = (async () => {
+    if (!AudioContextCtor) throw new Error("Web Audio is not available");
+    try {
+      audioContext = new AudioContextCtor({ sampleRate: 48000 });
+    } catch (error) {
+      // Some phones only expose their native hardware rate.
+      audioContext = new AudioContextCtor();
+    }
+    await audioContext.audioWorklet.addModule(AUDIO_WORKLET_URL);
+  })();
+  audioPrepare.catch(() => {
+    audioPrepare = null;
+    if (audioContext) {
+      audioContext.close().catch(() => {});
+      audioContext = null;
+    }
+  });
+  return audioPrepare;
+}
+
+// Call synchronously from a qualifying gesture. iOS treats pointerdown as activation
+// only for a mouse; touch activation happens on pointerup/touchend/click.
+function unlockAudio() {
+  void prepareAudio().catch(() => {});
+  if (audioContext && audioContext.state !== "running") {
+    audioContext.resume().catch(() => {});
   }
+}
+
+async function ensureAudio() {
+  unlockAudio();
+  if (audioStarting) return;
   audioStarting = true;
   let readyTimeout = null;
   try {
-    audioContext = new AudioContext({ sampleRate: 48000 });
-    // Start the rendering thread while the user activation is still available.
-    await audioContext.resume();
-    await audioContext.audioWorklet.addModule("./audio-worklet.js");
+    await prepareAudio();
+    if (audioContext.state !== "running") await audioContext.resume();
+    if (audioNode) return;
     audioNode = new AudioWorkletNode(audioContext, "pd-player");
     const ready = new Promise((resolve, reject) => {
       readyTimeout = setTimeout(() => reject(new Error("audio worklet priming timed out")), AUDIO_READY_TIMEOUT_MS);
@@ -306,10 +346,12 @@ async function ensureAudio() {
         }
       };
     });
+    // Connect before priming so the processor is running on every engine. It outputs
+    // silence until the start message, so this does not create an audible underrun.
+    audioNode.connect(audioContext.destination);
     for (let i = 0; i < 3; i++) pumpAudio(AUDIO_BLOCK_FRAMES);
     await ready;
     audioNode.port.postMessage({ type: "start" });
-    audioNode.connect(audioContext.destination);
   } catch (error) {
     if (audioNode) {
       audioNode.port.onmessage = null;
@@ -321,12 +363,16 @@ async function ensureAudio() {
       await audioContext.close().catch(() => {});
       audioContext = null;
     }
+    audioPrepare = null;
     console.warn("music unavailable", error);
   } finally {
     clearTimeout(readyTimeout);
     audioStarting = false;
   }
 }
+
+// Start loading while the page is idle; the context stays suspended until a gesture.
+void prepareAudio().catch(() => {});
 
 // Playfield data: the user's own disks, converted by tools/playfield.py. Nothing is bundled in git,
 // but if web/playfield.bin exists it is picked up automatically, so the page is ready to run.
