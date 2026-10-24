@@ -262,6 +262,8 @@ const memory = () => new Uint8Array(api.memory.buffer);
 let audioContext = null;
 let audioNode = null;
 let audioStarting = false;
+const AUDIO_BLOCK_FRAMES = 960;
+const AUDIO_READY_TIMEOUT_MS = 5000;
 const audioUnderrunsEl = document.getElementById("audio-underruns");
 
 function pumpAudio(frames) {
@@ -274,29 +276,55 @@ function pumpAudio(frames) {
 }
 
 async function ensureAudio() {
+  if (audioStarting) return;
   if (audioContext) {
     if (audioContext.state === "suspended") await audioContext.resume();
     return;
   }
-  if (audioStarting) return;
   audioStarting = true;
+  let readyTimeout = null;
   try {
     audioContext = new AudioContext({ sampleRate: 48000 });
+    // Start the rendering thread while the user activation is still available.
+    await audioContext.resume();
     await audioContext.audioWorklet.addModule("./audio-worklet.js");
     audioNode = new AudioWorkletNode(audioContext, "pd-player");
-    audioNode.port.onmessage = (event) => {
-      if (!event.data) return;
-      if (event.data.type === "need") pumpAudio(event.data.frames);
-      else if (event.data.type === "stats" && audioUnderrunsEl) {
-        audioUnderrunsEl.textContent = String(event.data.underruns);
-      }
-    };
+    const ready = new Promise((resolve, reject) => {
+      readyTimeout = setTimeout(() => reject(new Error("audio worklet priming timed out")), AUDIO_READY_TIMEOUT_MS);
+      audioNode.onprocessorerror = () => {
+        clearTimeout(readyTimeout);
+        reject(new Error("audio worklet processor failed"));
+      };
+      audioNode.port.onmessage = (event) => {
+        if (!event.data) return;
+        if (event.data.type === "ready") {
+          clearTimeout(readyTimeout);
+          resolve();
+        } else if (event.data.type === "need") pumpAudio(event.data.frames);
+        else if (event.data.type === "stats" && audioUnderrunsEl) {
+          audioUnderrunsEl.textContent = String(event.data.underruns);
+        }
+      };
+    });
+    for (let i = 0; i < 3; i++) pumpAudio(AUDIO_BLOCK_FRAMES);
+    await ready;
+    audioNode.port.postMessage({ type: "start" });
     audioNode.connect(audioContext.destination);
-    await audioContext.resume();
-    for (let i = 0; i < 4; i++) pumpAudio(4800);
   } catch (error) {
-    audioStarting = false;
+    if (audioNode) {
+      audioNode.port.onmessage = null;
+      audioNode.onprocessorerror = null;
+      audioNode.disconnect();
+      audioNode = null;
+    }
+    if (audioContext) {
+      await audioContext.close().catch(() => {});
+      audioContext = null;
+    }
     console.warn("music unavailable", error);
+  } finally {
+    clearTimeout(readyTimeout);
+    audioStarting = false;
   }
 }
 
