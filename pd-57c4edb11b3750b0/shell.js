@@ -435,6 +435,7 @@ const memory = () => new Uint8Array(api.memory.buffer);
 // The wasm core renders the recovered 50 Hz player into 48 kHz float blocks. An
 // AudioWorklet owns the output clock; the main thread only fills its queue.
 let audioContext = null;
+window.pdAudio = { get state() { return audioContext ? audioContext.state : "none"; }, get node() { return !!audioNode; }, get mode() { return mode; }, peak: 0, pumped: 0 };
 let audioPrepare = null;
 let audioNode = null;
 let audioStarting = false;
@@ -451,9 +452,17 @@ function pumpAudio(frames) {
   const count = menu
     ? api.pd_select_audio_render(selectCore, Math.min(frames, api.pd_select_audio_buffer_len()))
     : api.pd_core_audio_render(core, Math.min(frames, api.pd_core_audio_buffer_len()));
-  if (count === 0) return;
+  if (count === 0) {
+    // Nothing is playing yet (a table before its song starts). Answer the request with silence, otherwise the worklet
+    // waits for PCM forever and never asks again when the music does start.
+    const silence = new Float32Array(frames);
+    audioNode.port.postMessage({ type: "pcm", samples: silence }, [silence.buffer]);
+    return;
+  }
   const ptr = menu ? api.pd_select_audio_buffer(selectCore) : api.pd_core_audio_buffer(core);
   const samples = new Float32Array(api.memory.buffer, ptr, count).slice();
+  let peak = 0; for (let i = 0; i < samples.length; i += 16) peak = Math.max(peak, Math.abs(samples[i]));
+  window.pdAudio.peak = peak; window.pdAudio.pumped += count;
   audioNode.port.postMessage({ type: "pcm", samples }, [samples.buffer]);
 }
 
@@ -514,7 +523,7 @@ async function ensureAudio() {
         if (event.data.type === "ready") {
           clearTimeout(readyTimeout);
           resolve();
-        } else if (event.data.type === "need") pumpAudio(event.data.frames);
+        } else if (event.data.type === "need") { window.pdAudio.needs = (window.pdAudio.needs || 0) + 1; pumpAudio(event.data.frames); }
         else if (event.data.type === "stats" && audioUnderrunsEl) {
           audioUnderrunsEl.textContent = String(event.data.underruns);
         }
